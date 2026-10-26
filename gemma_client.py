@@ -11,7 +11,7 @@ def explain_findings(full_name: str, findings: list[dict]) -> str:
         )
 
     # Model names can change in availability. Override GEMMA_MODEL in .env if needed.
-    model = os.getenv("GEMMA_MODEL", "gemini-2.0-flash")
+    model = os.getenv("GEMMA_MODEL", "gemini-3.8-flash")
     client = genai.Client(api_key=api_key)
 
     safe_findings = []
