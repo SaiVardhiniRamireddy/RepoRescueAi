@@ -82,7 +82,9 @@ RULES = [
 
 
 def parse_github_url(url: str):
-    parsed = urlparse(url.strip())
+    # Strip whitespace, backslashes and trailing slashes that users often paste
+    url = url.strip().replace("\\", "/").rstrip("/")
+    parsed = urlparse(url)
     if parsed.scheme != "https" or parsed.netloc.lower() not in {"github.com", "www.github.com"}:
         raise ValueError("Enter a valid public GitHub URL beginning with https://github.com/")
     parts = [p for p in parsed.path.strip("/").split("/") if p]
@@ -108,11 +110,17 @@ def _get_json(url, params=None):
     if response.status_code == 404:
         raise ValueError("Repository not found, private, or inaccessible. This MVP supports public repositories only.")
     if response.status_code == 403:
-        msg = "GitHub API rate limit or access restriction. "
-        if not token:
-            msg += "Add GITHUB_TOKEN to .env for higher limits (5000 req/hr vs 60)."
+        import time
+        reset_ts = response.headers.get("X-RateLimit-Reset", "")
+        if reset_ts:
+            reset_in = max(0, int(reset_ts) - int(time.time()))
+            mins = reset_in // 60
+            secs = reset_in % 60
+            msg = f"GitHub API rate limit hit. Resets in {mins}m {secs}s. "
         else:
-            msg += "Wait a little and try again."
+            msg = "GitHub API rate limit or access restriction. "
+        if not token:
+            msg += "Add GITHUB_TOKEN to .env for 5000 req/hr vs 60 without token."
         raise ValueError(msg)
     response.raise_for_status()
     return response.json()
