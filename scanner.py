@@ -204,14 +204,16 @@ def scan_github_repository(url: str):
             break
         path = item["path"]
         try:
-            file_data = _get_json(
-                f"{API_BASE}/repos/{owner}/{repo}/contents/{path}",
-                params={"ref": branch},
-            )
-            encoded = file_data.get("content", "")
-            if not encoded or file_data.get("encoding") != "base64":
+            # Use raw.githubusercontent.com — no API rate limit!
+            raw_url = f"https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{path}"
+            token = os.getenv("GITHUB_TOKEN", "")
+            headers = {"User-Agent": "RepoRescueAI-Hackathon-MVP"}
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
+            resp = requests.get(raw_url, headers=headers, timeout=TIMEOUT)
+            if resp.status_code != 200:
                 continue
-            raw = base64.b64decode(encoded)
+            raw = resp.content
             if len(raw) > MAX_FILE_BYTES:
                 continue
             total_bytes += len(raw)
