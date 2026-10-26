@@ -97,7 +97,8 @@ def parse_github_url(url: str):
     return owner, repo
 
 
-def _get_json(url, params=None):
+def _get_json(url, params=None, retries=3):
+    import time
     token = os.getenv("GITHUB_TOKEN", "")
     headers = {
         "Accept": "application/vnd.github+json",
@@ -106,24 +107,32 @@ def _get_json(url, params=None):
     }
     if token:
         headers["Authorization"] = f"Bearer {token}"
-    response = requests.get(url, headers=headers, params=params, timeout=TIMEOUT)
-    if response.status_code == 404:
-        raise ValueError("Repository not found, private, or inaccessible. This MVP supports public repositories only.")
-    if response.status_code == 403:
-        import time
-        reset_ts = response.headers.get("X-RateLimit-Reset", "")
-        if reset_ts:
-            reset_in = max(0, int(reset_ts) - int(time.time()))
-            mins = reset_in // 60
-            secs = reset_in % 60
-            msg = f"GitHub API rate limit hit. Resets in {mins}m {secs}s. "
-        else:
-            msg = "GitHub API rate limit or access restriction. "
-        if not token:
-            msg += "Add GITHUB_TOKEN to .env for 5000 req/hr vs 60 without token."
-        raise ValueError(msg)
-    response.raise_for_status()
-    return response.json()
+
+    last_exc = None
+    for attempt in range(retries):
+        try:
+            response = requests.get(url, headers=headers, params=params, timeout=TIMEOUT)
+            if response.status_code == 404:
+                raise ValueError("Repository not found, private, or inaccessible. This MVP supports public repositories only.")
+            if response.status_code == 403:
+                reset_ts = response.headers.get("X-RateLimit-Reset", "")
+                if reset_ts:
+                    reset_in = max(0, int(reset_ts) - int(time.time()))
+                    msg = f"GitHub API rate limit hit. Resets in {reset_in // 60}m {reset_in % 60}s. "
+                else:
+                    msg = "GitHub API rate limit hit. "
+                if not token:
+                    msg += "Add GITHUB_TOKEN to .env for 5000 req/hr vs 60 without token."
+                raise ValueError(msg)
+            response.raise_for_status()
+            return response.json()
+        except ValueError:
+            raise  # Don't retry 404/403 — they won't change
+        except Exception as exc:
+            last_exc = exc
+            if attempt < retries - 1:
+                time.sleep(2)  # Wait before retrying
+    raise last_exc
 
 
 def _extension(path):
@@ -166,14 +175,34 @@ def _findings_for_file(path, content):
 
 def scan_github_repository(url: str):
     owner, repo = parse_github_url(url)
-    repo_data = _get_json(f"{API_BASE}/repos/{owner}/{repo}")
-    full_name = repo_data.get("full_name", f"{owner}/{repo}")
-    branch = repo_data.get("default_branch") or "main"
+    full_name = f"{owner}/{repo}"
 
-    tree_data = _get_json(
-        f"{API_BASE}/repos/{owner}/{repo}/git/trees/{branch}",
-        params={"recursive": "1"},
-    )
+    # Try main then master without extra API call — saves 1 rate-limit request
+    tree_data = None
+    branch = None
+    for candidate in ["main", "master"]:
+        try:
+            tree_data = _get_json(
+                f"{API_BASE}/repos/{owner}/{repo}/git/trees/{candidate}",
+                params={"recursive": "1"},
+            )
+            branch = candidate
+            break
+        except ValueError as e:
+            if "not found" in str(e).lower() or "404" in str(e):
+                continue
+            raise
+
+    if branch is None:
+        # Fallback: fetch repo metadata to find actual default branch
+        repo_data = _get_json(f"{API_BASE}/repos/{owner}/{repo}")
+        full_name = repo_data.get("full_name", full_name)
+        branch = repo_data.get("default_branch") or "main"
+        tree_data = _get_json(
+            f"{API_BASE}/repos/{owner}/{repo}/git/trees/{branch}",
+            params={"recursive": "1"},
+        )
+
     tree = tree_data.get("tree", [])
     truncated = tree_data.get("truncated", False)
 
